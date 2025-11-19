@@ -16,6 +16,8 @@ builder.Services.AddSingleton(new DapperContext(
 builder.Services.AddScoped<IOrderRepository, OrderRepository>();
 // Service DI
 builder.Services.AddScoped<OrderAppService>();
+builder.Services.AddScoped<IOutboxRepository, OutboxRepository>();
+
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
