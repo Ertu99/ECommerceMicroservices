@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/OrderService/">
+    <Project Path="OrderService.Api/OrderService.Api.csproj" />
+    <Project Path="OrderService.Application/OrderService.Application.csproj" Id="966b1197-1c7e-46ea-bd15-08ca6080ead5" />
+    <Project Path="OrderService.Domain/OrderService.Domain.csproj" Id="940f7423-e84a-4ec9-b9b2-efc6fa3b600e" />
+    <Project Path="OrderService.Infrastructure/OrderService.Infrastructure.csproj" Id="d8b97bec-c0f9-4341-8247-13121ad69167" />
+    <Project Path="OrderService.RabbitConsumer/OrderService.RabbitConsumer.csproj" Id="b5353975-4656-4af4-8e08-0bcd80ff7183" />
+  </Folder>
+  <Folder Name="/PaymentService/">
+    <Project Path="PaymentService.Api/PaymentService.Api.csproj" Id="8fe8276c-417d-4997-8f3e-393aa116f82a" />
+    <Project Path="PaymentService.Application/PaymentService.Application.csproj" Id="9d1a5f36-3c44-467a-905e-ee8f34428ee7" />
+    <Project Path="PaymentService.Domain/PaymentService.Domain.csproj" Id="1bde37d5-724e-41f3-859a-90e6a85e0687" />
+    <Project Path="PaymentService.Infrastructure/PaymentService.Infrastructure.csproj" Id="3d30e661-61ba-493b-a374-00ecad951893" />
+  </Folder>
+</Solution>

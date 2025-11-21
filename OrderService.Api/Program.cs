@@ -1,3 +1,4 @@
+using OrderService.Api.HostedServices;
 using OrderService.Application.Interfaces;
 using OrderService.Application.Services;
 using OrderService.Infrastructure.Database.Dapper;
@@ -17,6 +18,7 @@ builder.Services.AddScoped<IOrderRepository, OrderRepository>();
 // Service DI
 builder.Services.AddScoped<OrderAppService>();
 builder.Services.AddScoped<IOutboxRepository, OutboxRepository>();
+builder.Services.AddHostedService<OutboxWorker>();
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
