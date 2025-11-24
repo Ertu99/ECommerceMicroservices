@@ -11,5 +11,6 @@ namespace OrderService.Application.Interfaces
     {
         Task<int> CreateAsync(Order order);
         Task<Order?> GetByIdAsync(int id);
+        Task UpdateStatusAsync(int orderId, string status);
     }
 }

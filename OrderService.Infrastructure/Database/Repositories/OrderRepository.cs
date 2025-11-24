@@ -37,5 +37,13 @@ namespace OrderService.Infrastructure.Database.Repositories
             using var connection = _context.CreateConnection();
             return await connection.QueryFirstOrDefaultAsync<Order>(sql, new {Id = id});
         }
+
+        public async Task UpdateStatusAsync(int orderId, string status)
+        {
+            var sql = @"UPDATE Orders SET Status = @Status WHERE Id = @Id";
+
+            using var conn = _context.CreateConnection();
+            await conn.ExecuteAsync(sql, new { Id = orderId, Status = status});
+        }
     }
 }

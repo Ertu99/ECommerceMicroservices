@@ -3,16 +3,16 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System.Text;
 using System.Text.Json;
-using PaymentService.Application.DTOs.Events;
-using PaymentService.Application.Services;
+using OrderService.Application.DTOs.Events;
+using OrderService.Application.Services;
 
-namespace PaymentService.Api.HostedServices
+namespace OrderService.Api.HostedServices
 {
-    public class OrderCreatedConsumer : BackgroundService
+    public class PaymentEventsConsumer : BackgroundService
     {
         private readonly IServiceScopeFactory _scopeFactory;
 
-        public OrderCreatedConsumer(IServiceScopeFactory scopeFactory)
+        public PaymentEventsConsumer(IServiceScopeFactory scopeFactory)
         {
             _scopeFactory = scopeFactory;
         }
@@ -36,9 +36,8 @@ namespace PaymentService.Api.HostedServices
                 cancellationToken: stoppingToken
             );
 
-            // Kuyruk tanımı
             await channel.QueueDeclareAsync(
-                queue: "order_events",
+                queue: "payment_events",
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
@@ -46,46 +45,65 @@ namespace PaymentService.Api.HostedServices
                 cancellationToken: stoppingToken
             );
 
-            Console.WriteLine("💳 PaymentService OrderCreated eventlerini dinliyor...");
+            Console.WriteLine("🧾 OrderService Payment eventlerini dinliyor...");
 
             var consumer = new AsyncEventingBasicConsumer(channel);
 
             consumer.ReceivedAsync += async (sender, ea) =>
             {
-                Console.WriteLine("📩 OrderCreated event alındı");
                 try
                 {
                     var json = Encoding.UTF8.GetString(ea.Body.ToArray());
-                    var evt = JsonSerializer.Deserialize<OrderCreatedEvent>(json);
+                    var envelope = JsonSerializer.Deserialize<IntegrationEventEnvelope>(json);
+
+                    if (envelope == null)
+                    {
+                        await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
+                        return;
+                    }
 
                     using var scope = _scopeFactory.CreateScope();
-                    var paymentService = scope.ServiceProvider.GetRequiredService<PaymentAppService>();
+                    var orderService = scope.ServiceProvider.GetRequiredService<OrderAppService>();
 
-                    // Ödeme işle
-                    if (evt != null)
+                    switch (envelope.EventType)
                     {
-                        await paymentService.ProcessPaymentAsync(evt);
-                        Console.WriteLine($"✅ Ödeme işlemi başarıyla tamamlandı. OrderId: {evt.OrderId}");
+                        case "PaymentSucceeded":
+                            {
+                                var evt = JsonSerializer.Deserialize<PaymentSucceededEvent>(envelope.Payload);
+                                if (evt != null)
+                                    await orderService.HandlePaymentSucceededAsync(evt);
+                                break;
+                            }
+
+                        case "PaymentFailed":
+                            {
+                                var evt = JsonSerializer.Deserialize<PaymentFailedEvent>(envelope.Payload);
+                                if (evt != null)
+                                    await orderService.HandlePaymentFailedAsync(evt);
+                                break;
+                            }
+
+                        default:
+                            Console.WriteLine($"⚠ Bilinmeyen event type: {envelope.EventType}");
+                            break;
                     }
 
                     await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"❌ PaymentService Consumer Hatası: {ex.Message}");
+                    Console.WriteLine($"❌ PaymentEventsConsumer hata: {ex.Message}");
                     await channel.BasicNackAsync(ea.DeliveryTag, false, true, stoppingToken);
                 }
             };
 
-            // Consumer başlat
             await channel.BasicConsumeAsync(
-                queue: "order_events",
+                queue: "payment_events",
                 autoAck: false,
                 consumer: consumer,
                 cancellationToken: stoppingToken
             );
 
-            // Worker açık kalsın
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
     }

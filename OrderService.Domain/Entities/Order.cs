@@ -11,7 +11,7 @@ namespace OrderService.Domain.Entities
         public int Id { get; set; }
         public string CustomerName { get; set; } = "";
         public decimal TotalAmount { get; set; }
-        public string Status { get; set; } = "Created";
+        public string Status { get; set; } = "Pending";
         public DateTime CreatedAt { get; set; }
 
     }

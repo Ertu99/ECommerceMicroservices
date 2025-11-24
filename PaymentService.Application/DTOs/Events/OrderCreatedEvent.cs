@@ -4,14 +4,12 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace OrderService.Application.DTOs
+namespace PaymentService.Application.DTOs.Events
 {
-    public class OrderDto
+    public class OrderCreatedEvent
     {
-        public int Id { get; set; }
+        public int OrderId { get; set; }
         public string CustomerName { get; set; } = "";
         public decimal TotalAmount { get; set; }
-        public string Status { get; set; } = "";
-        
     }
 }
