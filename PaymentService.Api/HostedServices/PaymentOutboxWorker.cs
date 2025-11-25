@@ -27,69 +27,85 @@ namespace PaymentService.Api.HostedServices
                 Password = "guest"
             };
 
-            await using var connection = await factory.CreateConnectionAsync();
-            await using var channel = await connection.CreateChannelAsync();
+            await using var connection = await factory.CreateConnectionAsync(stoppingToken);
+            await using var channel = await connection.CreateChannelAsync(
+                new CreateChannelOptions(
+                    publisherConfirmationsEnabled: false,
+                    publisherConfirmationTrackingEnabled: false
+                ),
+                cancellationToken: stoppingToken
+            );
 
-            // Payment eventleri için kuyruk
             await channel.QueueDeclareAsync(
                 queue: "payment_events",
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
-                arguments: null
+                arguments: null,
+                cancellationToken: stoppingToken
             );
+
+            Console.WriteLine("📤 PaymentOutboxWorker çalışıyor...");
 
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
-                    await ProcessOutboxMessages(channel , stoppingToken);
+                    await ProcessOutboxMessages(channel, stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"PaymentOutboxWorker error: {ex.Message}");
+                    Console.WriteLine($"❌ PaymentOutboxWorker error: {ex.Message}");
                 }
 
+                // CPU yakmamak için bekleme
                 await Task.Delay(3000, stoppingToken);
             }
         }
 
         private async Task ProcessOutboxMessages(IChannel channel, CancellationToken stoppingToken)
         {
-            var sql = @"SELECT * FROM OutboxMessages WHERE Status = 'Pending' LIMIT 10";
+            const string sql =
+                @"SELECT * FROM OutboxMessages 
+                  WHERE Status = 'Pending' 
+                  ORDER BY CreatedAt 
+                  LIMIT 10";
 
             using var conn = _context.CreateConnection();
             var messages = await conn.QueryAsync<OutboxMessage>(sql);
 
-
             foreach (var msg in messages)
             {
-                var envelope = new IntegrationEventEnvelope
+                try
                 {
-                    EventType = msg.EventType,
-                    Payload = msg.Payload
-                };
+                    // Outbox'taki JSON Payload doğrudan publish ediliyor
+                    var body = Encoding.UTF8.GetBytes(msg.Payload);
 
-                var json = JsonSerializer.Serialize(envelope);
-                var body = Encoding.UTF8.GetBytes(json);
+                    await channel.BasicPublishAsync(
+                        exchange: "",
+                        routingKey: "payment_events",
+                        mandatory: false,
+                        basicProperties: new BasicProperties(),
+                        body: body,
+                        cancellationToken: stoppingToken
+                    );
 
-                await channel.BasicPublishAsync(
-                    exchange: "",
-                    routingKey: "payment_events",
-                    mandatory: false,
-                    basicProperties: new BasicProperties(),
-                    body: body,
-                    cancellationToken: stoppingToken
-                );
+                    // Mesaj başarılı → DB güncelle
+                    const string update =
+                        @"UPDATE OutboxMessages
+                          SET Status = 'Processed', ProcessedAt = NOW()
+                          WHERE Id = @Id";
 
-                var updateSql = @"
-                    UPDATE OutboxMessages
-                    SET Status = 'Processed', ProcessedAt = NOW()
-                    WHERE Id = @Id";
+                    await conn.ExecuteAsync(update, new { msg.Id });
 
-                await conn.ExecuteAsync(updateSql, new { msg.Id });
+                    Console.WriteLine($"📨 Outbox → Payment event yayınlandı | Id={msg.Id}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ Outbox publish hata (Id={msg.Id}): {ex.Message}");
+                    // Not: Retry mekanizması burada olabilir (Status=Failed)
+                }
             }
         }
     }
 }
-

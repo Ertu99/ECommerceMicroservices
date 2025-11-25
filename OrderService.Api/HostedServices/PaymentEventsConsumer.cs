@@ -27,14 +27,7 @@ namespace OrderService.Api.HostedServices
             };
 
             await using var connection = await factory.CreateConnectionAsync(stoppingToken);
-
-            await using var channel = await connection.CreateChannelAsync(
-                new CreateChannelOptions(
-                    publisherConfirmationsEnabled: false,
-                    publisherConfirmationTrackingEnabled: false
-                ),
-                cancellationToken: stoppingToken
-            );
+            await using var channel = await connection.CreateChannelAsync(cancellationToken: stoppingToken);
 
             await channel.QueueDeclareAsync(
                 queue: "payment_events",
@@ -45,7 +38,7 @@ namespace OrderService.Api.HostedServices
                 cancellationToken: stoppingToken
             );
 
-            Console.WriteLine("🧾 OrderService Payment eventlerini dinliyor...");
+            Console.WriteLine("🧾 OrderService → Payment events dinleniyor...");
 
             var consumer = new AsyncEventingBasicConsumer(channel);
 
@@ -53,38 +46,36 @@ namespace OrderService.Api.HostedServices
             {
                 try
                 {
-                    var json = Encoding.UTF8.GetString(ea.Body.ToArray());
-                    var envelope = JsonSerializer.Deserialize<IntegrationEventEnvelope>(json);
+                    string json = Encoding.UTF8.GetString(ea.Body.ToArray());
 
-                    if (envelope == null)
+                    var wrapper = JsonSerializer.Deserialize<PaymentEventWrapper>(json);
+
+                    if (wrapper == null)
                     {
+                        Console.WriteLine("⚠ Geçersiz event wrapper alındı.");
                         await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
                         return;
                     }
 
                     using var scope = _scopeFactory.CreateScope();
-                    var orderService = scope.ServiceProvider.GetRequiredService<OrderAppService>();
+                    var service = scope.ServiceProvider.GetRequiredService<OrderAppService>();
 
-                    switch (envelope.EventType)
+                    switch (wrapper.EventType)
                     {
                         case "PaymentSucceeded":
-                            {
-                                var evt = JsonSerializer.Deserialize<PaymentSucceededEvent>(envelope.Payload);
-                                if (evt != null)
-                                    await orderService.HandlePaymentSucceededAsync(evt);
-                                break;
-                            }
+                            var evtSuccess = JsonSerializer.Deserialize<PaymentSucceededEvent>(wrapper.Payload);
+                            if (evtSuccess != null)
+                                await service.HandlePaymentSucceededAsync(evtSuccess);
+                            break;
 
                         case "PaymentFailed":
-                            {
-                                var evt = JsonSerializer.Deserialize<PaymentFailedEvent>(envelope.Payload);
-                                if (evt != null)
-                                    await orderService.HandlePaymentFailedAsync(evt);
-                                break;
-                            }
+                            var evtFail = JsonSerializer.Deserialize<PaymentFailedEvent>(wrapper.Payload);
+                            if (evtFail != null)
+                                await service.HandlePaymentFailedAsync(evtFail);
+                            break;
 
                         default:
-                            Console.WriteLine($"⚠ Bilinmeyen event type: {envelope.EventType}");
+                            Console.WriteLine($"⚠ Bilinmeyen eventType: {wrapper.EventType}");
                             break;
                     }
 
@@ -92,7 +83,7 @@ namespace OrderService.Api.HostedServices
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"❌ PaymentEventsConsumer hata: {ex.Message}");
+                    Console.WriteLine($"❌ PaymentEventConsumer HATASI: {ex.Message}");
                     await channel.BasicNackAsync(ea.DeliveryTag, false, true, stoppingToken);
                 }
             };
@@ -106,5 +97,12 @@ namespace OrderService.Api.HostedServices
 
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
+    }
+
+    // PaymentService'in gönderdiği JSON'u karşılayan model
+    public class PaymentEventWrapper
+    {
+        public string EventType { get; set; } = "";
+        public string Payload { get; set; } = "";
     }
 }

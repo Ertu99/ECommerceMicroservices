@@ -1,10 +1,12 @@
 ﻿using Microsoft.Extensions.Hosting;
+using PaymentService.Application.DTOs.Events;
+using PaymentService.Application.Interfaces;
+using PaymentService.Application.Redis;
+using PaymentService.Application.Services;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System.Text;
 using System.Text.Json;
-using PaymentService.Application.DTOs.Events;
-using PaymentService.Application.Services;
 
 namespace PaymentService.Api.HostedServices
 {
@@ -27,7 +29,6 @@ namespace PaymentService.Api.HostedServices
             };
 
             await using var connection = await factory.CreateConnectionAsync(stoppingToken);
-
             await using var channel = await connection.CreateChannelAsync(
                 new CreateChannelOptions(
                     publisherConfirmationsEnabled: false,
@@ -36,7 +37,6 @@ namespace PaymentService.Api.HostedServices
                 cancellationToken: stoppingToken
             );
 
-            // Kuyruk tanımı
             await channel.QueueDeclareAsync(
                 queue: "order_events",
                 durable: true,
@@ -52,32 +52,54 @@ namespace PaymentService.Api.HostedServices
 
             consumer.ReceivedAsync += async (sender, ea) =>
             {
-                Console.WriteLine("📩 OrderCreated event alındı");
                 try
                 {
                     var json = Encoding.UTF8.GetString(ea.Body.ToArray());
                     var evt = JsonSerializer.Deserialize<OrderCreatedEvent>(json);
 
+                    // Null event korunması
+                    if (evt == null)
+                    {
+                        Console.WriteLine("⚠️ OrderCreated event NULL geldi!");
+                        await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
+                        return;
+                    }
+
                     using var scope = _scopeFactory.CreateScope();
                     var paymentService = scope.ServiceProvider.GetRequiredService<PaymentAppService>();
+                    var cache = scope.ServiceProvider.GetRequiredService<IRedisCacheService>();
 
-                    // Ödeme işle
-                    if (evt != null)
+                    // ======================================
+                    //           IDEMPOTENCY KONTROLÜ
+                    // ======================================
+                    var idemKey = CacheKeys.PaymentIdempotency(evt.EventId.ToString());
+                    var isFirst = await cache.TrySetIdempotencyKeyAsync(idemKey);
+
+                    if (!isFirst)
                     {
-                        await paymentService.ProcessPaymentAsync(evt);
-                        Console.WriteLine($"✅ Ödeme işlemi başarıyla tamamlandı. OrderId: {evt.OrderId}");
+                        Console.WriteLine($"⚠️ Duplicate event DROP edildi | EventId={evt.EventId}");
+                        await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
+                        return;
                     }
+
+                    Console.WriteLine($"🟢 Idempotency OK → İlk event işlendi | EventId={evt.EventId}");
+
+                    // ======================================
+                    //          NORMAL ÖDEME AKIŞI
+                    // ======================================
+                    await paymentService.ProcessPaymentAsync(evt);
+
+                    Console.WriteLine($"💰 Payment işlemi tamamlandı | OrderId={evt.OrderId}");
 
                     await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"❌ PaymentService Consumer Hatası: {ex.Message}");
+                    Console.WriteLine($"❌ PaymentService Hatası: {ex.Message}");
                     await channel.BasicNackAsync(ea.DeliveryTag, false, true, stoppingToken);
                 }
             };
 
-            // Consumer başlat
             await channel.BasicConsumeAsync(
                 queue: "order_events",
                 autoAck: false,
@@ -85,7 +107,7 @@ namespace PaymentService.Api.HostedServices
                 cancellationToken: stoppingToken
             );
 
-            // Worker açık kalsın
+            // Worker sonsuza kadar çalışacak
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
     }

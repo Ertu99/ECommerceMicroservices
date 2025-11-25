@@ -11,5 +11,6 @@ namespace OrderService.Application.DTOs.Events
         public int OrderId { get; set; }
         public string CustomerName { get; set; } = "";
         public decimal TotalAmount { get; set; }
+        public Guid EventId { get; set; } = Guid.NewGuid();
     }
 }

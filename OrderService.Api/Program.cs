@@ -4,6 +4,7 @@ using OrderService.Application.Services;
 using OrderService.Infrastructure.Cache;
 using OrderService.Infrastructure.Database.Dapper;
 using OrderService.Infrastructure.Database.Repositories;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +19,10 @@ builder.Services.AddStackExchangeRedisCache(options =>
 
 builder.Services.AddScoped<IRedisCacheService, RedisCacheService>();
 
+builder.Services.AddSingleton<IConnectionMultiplexer>(
+    ConnectionMultiplexer.Connect("localhost:6379"));
+
+
 
 // Dapper Context
 builder.Services.AddSingleton(new DapperContext(
@@ -31,15 +36,9 @@ builder.Services.AddHostedService<OutboxWorker>();
 builder.Services.AddHostedService<PaymentEventsConsumer>();
 
 
-
-
-
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
-
-
 
 
 var app = builder.Build();

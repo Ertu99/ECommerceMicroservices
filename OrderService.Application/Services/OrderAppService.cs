@@ -1,14 +1,9 @@
 ﻿using OrderService.Application.DTOs;
 using OrderService.Application.DTOs.Events;
 using OrderService.Application.Interfaces;
+using OrderService.Application.Redis;
 using OrderService.Domain.Entities;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.NetworkInformation;
-using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
 
 namespace OrderService.Application.Services
 {
@@ -25,11 +20,26 @@ namespace OrderService.Application.Services
             _cache = cache;
         }
 
-        public async Task<int> CreateOrderAsync(CreateOrderDto dto)
+        // ============================================
+        // CREATE ORDER (Idempotency + Outbox Pattern)
+        // ============================================
+        public async Task<int> CreateOrderAsync(CreateOrderDto dto, Guid eventId)
         {
+            string idemKey = CacheKeys.OrderIdempotency(eventId.ToString());
+
+            // 1) Idempotency → Redis kontrolü
+            var existingOrderId = await _cache.GetAsync<int?>(idemKey);
+            if (existingOrderId.HasValue)
+            {
+                Console.WriteLine($"⚠️ Idempotent HIT → returning existing OrderId={existingOrderId.Value}");
+                return existingOrderId.Value;
+            }
+
+            // Validation
             if (dto.TotalAmount <= 0)
                 throw new Exception("Order amount must be greater than zero");
 
+            // 2) DB Insert
             var order = new Order
             {
                 CustomerName = dto.CustomerName,
@@ -39,18 +49,21 @@ namespace OrderService.Application.Services
             };
 
             var orderId = await _repo.CreateAsync(order);
-            // 1) Event nesnesini oluştur
+
+            // 3) Redis → idempotency kaydı
+            await _cache.SetAbsoluteAsync(idemKey, orderId, 60);
+
+            // 4) Event oluştur (OrderCreated)
             var orderCreatedEvent = new OrderCreatedEvent
             {
+                EventId = eventId,
                 OrderId = orderId,
                 CustomerName = order.CustomerName,
                 TotalAmount = order.TotalAmount
             };
 
-            // 2) JSON’a çevir
-            var payload = JsonSerializer.Serialize(orderCreatedEvent);
+            string payload = JsonSerializer.Serialize(orderCreatedEvent);
 
-            // 3) Outbox kaydı oluştur
             var outbox = new OutboxMessage
             {
                 EventType = "OrderCreated",
@@ -59,53 +72,67 @@ namespace OrderService.Application.Services
                 Status = "Pending"
             };
 
-            // 4) DB’ye kaydet
             await _outboxRepo.AddAsync(outbox);
 
-            return orderId;
+            Console.WriteLine($"🟢 Order Created | OrderId={orderId} | EventId={eventId}");
 
+            return orderId;
         }
 
+        // ============================================
+        // GET ORDER (Cache-Aside Pattern)
+        // ============================================
         public async Task<OrderDto?> GetByIdAsync(int id)
         {
-            var cacheKey = $"order:{id}";
+            var cacheKey = CacheKeys.OrderDetails(id);
 
-            // 1) Önce cache’de var mı?
+            // 1) Cache kontrol
             var cached = await _cache.GetAsync<OrderDto>(cacheKey);
             if (cached != null)
                 return cached;
 
-            // 2) DB’den getir
+            // 2) DB sorgu
             var order = await _repo.GetByIdAsync(id);
             if (order == null)
                 return null;
-            // 3) Mapping: Entity → DTO
 
+            // 3) Mapping
             var dto = new OrderDto
             {
                 Id = order.Id,
                 CustomerName = order.CustomerName,
                 TotalAmount = order.TotalAmount,
                 Status = order.Status
-
             };
-            // 4) Cache'e yaz
-            await _cache.SetAsync(cacheKey,dto,minutes : 2);
+
+            // 4) Cache’e absolute TTL ile yaz (10 dk)
+            await _cache.SetAbsoluteAsync(cacheKey, dto, 10);
+
             return dto;
         }
 
+        // ============================================
+        // SAGA — PAYMENT SUCCESS
+        // ============================================
         public async Task HandlePaymentSucceededAsync(PaymentSucceededEvent evt)
         {
-            // SAGA: Order -> Paid
             await _repo.UpdateStatusAsync(evt.OrderId, "Paid");
             Console.WriteLine($"✅ Order {evt.OrderId} ödeme başarılı → Status = Paid");
+
+            // Cache invalidate
+            await _cache.RemoveAsync(CacheKeys.OrderDetails(evt.OrderId));
         }
 
+        // ============================================
+        // SAGA — PAYMENT FAILED
+        // ============================================
         public async Task HandlePaymentFailedAsync(PaymentFailedEvent evt)
         {
-            // SAGA Compensation: Order -> Cancelled
             await _repo.UpdateStatusAsync(evt.OrderId, "Cancelled");
-            Console.WriteLine($"❌ Order {evt.OrderId} ödeme başarısız → Status = Cancelled (Reason: {evt.Reason})");
+            Console.WriteLine($"❌ Order {evt.OrderId} ödeme başarısız → Status = Cancelled");
+
+            // Cache invalidate
+            await _cache.RemoveAsync(CacheKeys.OrderDetails(evt.OrderId));
 
         }
     }

@@ -1,12 +1,8 @@
 ﻿using PaymentService.Application.DTOs.Events;
 using PaymentService.Application.Interfaces;
+using PaymentService.Application.Redis;
 using PaymentService.Domain.Entities;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
 
 namespace PaymentService.Application.Services
 {
@@ -14,28 +10,57 @@ namespace PaymentService.Application.Services
     {
         private readonly IPaymentRepository _paymentRepo;
         private readonly IOutboxRepository _outboxRepo;
-        public PaymentAppService(IPaymentRepository paymentRepo, IOutboxRepository outboxRepo )
+        private readonly IRedisCacheService _cache;
+
+        public PaymentAppService(IPaymentRepository paymentRepo,
+                                 IOutboxRepository outboxRepo,
+                                 IRedisCacheService cache)
         {
             _paymentRepo = paymentRepo;
             _outboxRepo = outboxRepo;
+            _cache = cache;
         }
 
+        // ===========================================================
+        // MAIN PAYMENT PROCESS
+        // ===========================================================
         public async Task ProcessPaymentAsync(OrderCreatedEvent evt)
         {
-            // %50 ihtimalle ödeme başarısız simülasyonu
-            var random = new Random();
-            bool isSuccess = random.Next(0, 100) >= 30;
-           
+            bool isSuccess = Random.Shared.Next(0, 100) >= 30; // %70 success
+
             if (isSuccess)
             {
                 await HandleSuccess(evt);
+
+                await _cache.SetPaymentResultAsync(
+                    CacheKeys.PaymentResult(evt.OrderId),
+                    new PaymentResultCacheDto
+                    {
+                        OrderId = evt.OrderId,
+                        Status = "PaymentSucceeded"
+                    },
+                    minutes: 30
+                );
             }
             else
             {
                 await HandleFail(evt);
+
+                await _cache.SetPaymentResultAsync(
+                    CacheKeys.PaymentResult(evt.OrderId),
+                    new PaymentResultCacheDto
+                    {
+                        OrderId = evt.OrderId,
+                        Status = "PaymentFailed"
+                    },
+                    minutes: 30
+                );
             }
         }
 
+        // ===========================================================
+        // PAYMENT SUCCESS
+        // ===========================================================
         private async Task HandleSuccess(OrderCreatedEvent evt)
         {
             var payment = new Payment
@@ -46,7 +71,7 @@ namespace PaymentService.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
-            await _paymentRepo.AddAsync( payment );
+            await _paymentRepo.AddAsync(payment);
 
             var successEvent = new PaymentSucceededEvent
             {
@@ -54,17 +79,21 @@ namespace PaymentService.Application.Services
                 Amount = evt.TotalAmount
             };
 
-            var json = JsonSerializer.Serialize( successEvent );
+            string json = JsonSerializer.Serialize(successEvent);
 
             var outbox = new OutboxMessage
             {
                 EventType = "PaymentSucceeded",
                 Payload = json,
                 CreatedAt = DateTime.UtcNow
-            }; ;
-            await _outboxRepo.AddAsync( outbox );
+            };
+
+            await _outboxRepo.AddAsync(outbox);
         }
 
+        // ===========================================================
+        // PAYMENT FAIL
+        // ===========================================================
         private async Task HandleFail(OrderCreatedEvent evt)
         {
             var payment = new Payment
@@ -75,7 +104,7 @@ namespace PaymentService.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
-            await _paymentRepo.AddAsync ( payment );
+            await _paymentRepo.AddAsync(payment);
 
             var failEvent = new PaymentFailedEvent
             {
@@ -83,7 +112,7 @@ namespace PaymentService.Application.Services
                 Reason = "Insufficient balance"
             };
 
-            var json = JsonSerializer.Serialize(failEvent);
+            string json = JsonSerializer.Serialize(failEvent);
 
             var outbox = new OutboxMessage
             {
@@ -94,6 +123,14 @@ namespace PaymentService.Application.Services
 
             await _outboxRepo.AddAsync(outbox);
         }
+    }
 
+    // ================================================
+    // CACHE DTO
+    // ================================================
+    public class PaymentResultCacheDto
+    {
+        public int OrderId { get; set; }
+        public string Status { get; set; } = "";
     }
 }
