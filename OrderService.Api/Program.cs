@@ -4,46 +4,74 @@ using OrderService.Application.Services;
 using OrderService.Infrastructure.Cache;
 using OrderService.Infrastructure.Database.Dapper;
 using OrderService.Infrastructure.Database.Repositories;
+using RabbitMQ.Client;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-
+// =======================================
+// CONTROLLERS
+// =======================================
 builder.Services.AddControllers();
+
+// =======================================
+// REDIS
+// =======================================
 
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = "localhost:6379";
 });
 
-builder.Services.AddScoped<IRedisCacheService, RedisCacheService>();
-
 builder.Services.AddSingleton<IConnectionMultiplexer>(
     ConnectionMultiplexer.Connect("localhost:6379"));
 
+builder.Services.AddScoped<IRedisCacheService, RedisCacheService>();
 
+// =======================================
+// RABBITMQ ConnectionFactory 
+// =======================================
+builder.Services.AddSingleton(sp =>
+{
+    return new ConnectionFactory
+    {
+        HostName = "localhost",
+        UserName = "guest",
+        Password = "guest"
+    };
+});
 
-// Dapper Context
+// =======================================
+// DAPPER
+// =======================================
 builder.Services.AddSingleton(new DapperContext(
-    builder.Configuration.GetConnectionString("Postgres")));
-// Repository DI
+    builder.Configuration.GetConnectionString("Postgres")
+));
+
+// =======================================
+// REPOSITORIES
+// =======================================
 builder.Services.AddScoped<IOrderRepository, OrderRepository>();
 builder.Services.AddScoped<IOutboxRepository, OutboxRepository>();
-// Service DI
+
+// =======================================
+// APPLICATION SERVICES
+// =======================================
 builder.Services.AddScoped<OrderAppService>();
-builder.Services.AddHostedService<OutboxWorker>();
-builder.Services.AddHostedService<PaymentEventsConsumer>();
 
+// =======================================
+// BACKGROUND SERVICES (WORKERS)
+// =======================================
+builder.Services.AddHostedService<OutboxWorker>();           // OrderCreated publish
+builder.Services.AddHostedService<PaymentEventsConsumer>();  // PaymentSucceeded/Failed consume
 
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+// =======================================
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
+// =======================================
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -51,9 +79,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
 app.UseAuthorization();
-
 app.MapControllers();
 
 app.Run();

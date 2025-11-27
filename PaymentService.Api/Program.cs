@@ -1,53 +1,76 @@
-using PaymentService.Api.HostedServices;
+﻿using PaymentService.Api.HostedServices;
 using PaymentService.Application.Interfaces;
 using PaymentService.Application.Services;
 using PaymentService.Infrastructure.Cache;
 using PaymentService.Infrastructure.Database.Dapper;
 using PaymentService.Infrastructure.Database.Repositories;
+using RabbitMQ.Client;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ==========================
-// Services
-// ==========================
-
+// =======================================
+// CONTROLLERS
+// =======================================
 builder.Services.AddControllers();
 
-// Redis Connection
+// =======================================
+// REDIS
+// =======================================
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = "localhost:6379";
+});
+
 builder.Services.AddSingleton<IConnectionMultiplexer>(
     ConnectionMultiplexer.Connect("localhost:6379"));
 
-// Redis Cache Service
 builder.Services.AddScoped<IRedisCacheService, RedisCacheService>();
 
-// Swagger
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+// =======================================
+// RABBITMQ ConnectionFactory 
+// =======================================
+builder.Services.AddSingleton(sp =>
+{
+    return new ConnectionFactory
+    {
+        HostName = "localhost",
+        UserName = "guest",
+        Password = "guest"
+    };
+});
 
-// Dapper Context
+// =======================================
+// DAPPER
+// =======================================
 builder.Services.AddSingleton(new DapperContext(
     builder.Configuration.GetConnectionString("Postgres")
 ));
 
-// Application Services
+// =======================================
+// APPLICATION SERVICES
+// =======================================
 builder.Services.AddScoped<PaymentAppService>();
 
-// Repositories
+// =======================================
+// REPOSITORIES
+// =======================================
 builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
 builder.Services.AddScoped<IOutboxRepository, OutboxRepository>();
 
-// Background Workers
-builder.Services.AddHostedService<OrderCreatedConsumer>();
-builder.Services.AddHostedService<PaymentOutboxWorker>();
+// =======================================
+// BACKGROUND SERVICES (WORKERS)
+// =======================================
+builder.Services.AddHostedService<OrderCreatedConsumer>(); // order.created → payment oluşturur
+builder.Services.AddHostedService<PaymentOutboxWorker>();  // payment events → publish
 
-// ==========================
-// Build App
-// ==========================
+// =======================================
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+// =======================================
 
 var app = builder.Build();
 
-// Middleware
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();

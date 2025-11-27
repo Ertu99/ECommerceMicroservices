@@ -37,6 +37,17 @@ namespace PaymentService.Api.HostedServices
                 cancellationToken: stoppingToken
             );
 
+            // 1) EXCHANGE tanımı
+            await channel.ExchangeDeclareAsync(
+                exchange: "order_exchange",
+                type: "direct",
+                durable: true,
+                autoDelete: false,
+                arguments: null,
+                cancellationToken: stoppingToken
+            );
+
+            // 2) QUEUE tanımı
             await channel.QueueDeclareAsync(
                 queue: "order_events",
                 durable: true,
@@ -46,7 +57,16 @@ namespace PaymentService.Api.HostedServices
                 cancellationToken: stoppingToken
             );
 
-            Console.WriteLine("💳 PaymentService OrderCreated eventlerini dinliyor...");
+            // 3) BIND → queue + exchange + routing key
+            await channel.QueueBindAsync(
+                queue: "order_events",
+                exchange: "order_exchange",
+                routingKey: "order.created",
+                arguments: null,
+                cancellationToken: stoppingToken
+            );
+
+            Console.WriteLine("💳 PaymentService 'order_events' kuyruğunu (order_exchange/order.created) dinliyor...");
 
             var consumer = new AsyncEventingBasicConsumer(channel);
 
@@ -57,11 +77,10 @@ namespace PaymentService.Api.HostedServices
                     var json = Encoding.UTF8.GetString(ea.Body.ToArray());
                     var evt = JsonSerializer.Deserialize<OrderCreatedEvent>(json);
 
-                    // Null event korunması
                     if (evt == null)
                     {
                         Console.WriteLine("⚠️ OrderCreated event NULL geldi!");
-                        await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
+                        await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                         return;
                     }
 
@@ -69,34 +88,34 @@ namespace PaymentService.Api.HostedServices
                     var paymentService = scope.ServiceProvider.GetRequiredService<PaymentAppService>();
                     var cache = scope.ServiceProvider.GetRequiredService<IRedisCacheService>();
 
-                    // ======================================
-                    //           IDEMPOTENCY KONTROLÜ
-                    // ======================================
+                    // ==============================
+                    //      IDEMPOTENCY KONTROLÜ
+                    // ==============================
                     var idemKey = CacheKeys.PaymentIdempotency(evt.EventId.ToString());
                     var isFirst = await cache.TrySetIdempotencyKeyAsync(idemKey);
 
                     if (!isFirst)
                     {
                         Console.WriteLine($"⚠️ Duplicate event DROP edildi | EventId={evt.EventId}");
-                        await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
+                        await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                         return;
                     }
 
                     Console.WriteLine($"🟢 Idempotency OK → İlk event işlendi | EventId={evt.EventId}");
 
-                    // ======================================
-                    //          NORMAL ÖDEME AKIŞI
-                    // ======================================
+                    // ==============================
+                    //        NORMAL ÖDEME AKIŞI
+                    // ==============================
                     await paymentService.ProcessPaymentAsync(evt);
 
                     Console.WriteLine($"💰 Payment işlemi tamamlandı | OrderId={evt.OrderId}");
 
-                    await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
+                    await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"❌ PaymentService Hatası: {ex.Message}");
-                    await channel.BasicNackAsync(ea.DeliveryTag, false, true, stoppingToken);
+                    await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
                 }
             };
 

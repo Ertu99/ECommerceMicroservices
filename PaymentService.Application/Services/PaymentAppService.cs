@@ -32,6 +32,7 @@ namespace PaymentService.Application.Services
             {
                 await HandleSuccess(evt);
 
+                // Redis cache → PaymentService’in kendi result üretimi
                 await _cache.SetPaymentResultAsync(
                     CacheKeys.PaymentResult(evt.OrderId),
                     new PaymentResultCacheDto
@@ -63,6 +64,7 @@ namespace PaymentService.Application.Services
         // ===========================================================
         private async Task HandleSuccess(OrderCreatedEvent evt)
         {
+            // 1) DB Insert
             var payment = new Payment
             {
                 OrderId = evt.OrderId,
@@ -73,6 +75,7 @@ namespace PaymentService.Application.Services
 
             await _paymentRepo.AddAsync(payment);
 
+            // 2) Event
             var successEvent = new PaymentSucceededEvent
             {
                 OrderId = evt.OrderId,
@@ -81,14 +84,18 @@ namespace PaymentService.Application.Services
 
             string json = JsonSerializer.Serialize(successEvent);
 
+            // 3) Outbox
             var outbox = new OutboxMessage
             {
-                EventType = "PaymentSucceeded",
+                EventType = "PaymentSucceeded", // routing key = payment.succeeded
                 Payload = json,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                Status = "Pending"
             };
 
             await _outboxRepo.AddAsync(outbox);
+
+            Console.WriteLine($"🟢 Payment SUCCESS → Order={evt.OrderId}, Amount={evt.TotalAmount}");
         }
 
         // ===========================================================
@@ -96,6 +103,7 @@ namespace PaymentService.Application.Services
         // ===========================================================
         private async Task HandleFail(OrderCreatedEvent evt)
         {
+            // 1) DB Insert
             var payment = new Payment
             {
                 OrderId = evt.OrderId,
@@ -106,28 +114,33 @@ namespace PaymentService.Application.Services
 
             await _paymentRepo.AddAsync(payment);
 
+            // 2) Event
             var failEvent = new PaymentFailedEvent
             {
                 OrderId = evt.OrderId,
-                Reason = "Insufficient balance"
+                Reason = "Insufficient balance" // örnek
             };
 
             string json = JsonSerializer.Serialize(failEvent);
 
+            // 3) Outbox
             var outbox = new OutboxMessage
             {
-                EventType = "PaymentFailed",
+                EventType = "PaymentFailed", // routing key = payment.failed
                 Payload = json,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                Status = "Pending"
             };
 
             await _outboxRepo.AddAsync(outbox);
+
+            Console.WriteLine($"❌ Payment FAIL → Order={evt.OrderId}");
         }
     }
 
-    // ================================================
+    // ===========================================================
     // CACHE DTO
-    // ================================================
+    // ===========================================================
     public class PaymentResultCacheDto
     {
         public int OrderId { get; set; }

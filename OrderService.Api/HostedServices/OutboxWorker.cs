@@ -12,11 +12,9 @@ namespace OrderService.Api.HostedServices
     {
         private readonly DapperContext _context;
 
-        
         public OutboxWorker(DapperContext context)
         {
             _context = context;
-             
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -28,39 +26,39 @@ namespace OrderService.Api.HostedServices
                 Password = "guest"
             };
 
-            // 1. Bağlantı ve Kanalı ASYNC olarak oluşturuyoruz.
-            // "await using" sayesinde servis durduğunda bağlantılar otomatik ve düzgün kapanır.
-            await using var connection = await factory.CreateConnectionAsync();
-            await using var channel = await connection.CreateChannelAsync();
+            // Bağlantı ve kanal
+            await using var connection = await factory.CreateConnectionAsync(stoppingToken);
+            await using var channel = await connection.CreateChannelAsync(cancellationToken: stoppingToken);
 
-            // 2. Kuyruk tanımlama da artık async
-            await channel.QueueDeclareAsync(
-                queue: "order_events",
+            // Sadece EXCHANGE tanımlıyoruz (publisher tarafı)
+            await channel.ExchangeDeclareAsync(
+                exchange: "order_exchange",
+                type: "direct",
                 durable: true,
-                exclusive: false,
                 autoDelete: false,
-                arguments: null
+                arguments: null,
+                cancellationToken: stoppingToken
             );
 
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
-                    // Kanalı parametre olarak gönderiyoruz
-                    await ProcessOutboxMessages(channel);
+                    await ProcessOutboxMessages(channel, stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                     
+                    // TODO: Serilog ekleyince buraya log yazacağız
+                    Console.WriteLine($"[OutboxWorker] Hata: {ex.Message}");
                 }
 
                 await Task.Delay(3000, stoppingToken);
             }
         }
 
-        private async Task ProcessOutboxMessages(IChannel channel)
+        private async Task ProcessOutboxMessages(IChannel channel, CancellationToken cancellationToken)
         {
-            var sql = @"SELECT * FROM OutboxMessages WHERE Status = 'Pending' LIMIT 10";
+            const string sql = @"SELECT * FROM OutboxMessages WHERE Status= 'Pending' LIMIT 10";
 
             using var conn = _context.CreateConnection();
             var messages = await conn.QueryAsync<OutboxMessage>(sql);
@@ -69,16 +67,18 @@ namespace OrderService.Api.HostedServices
             {
                 var body = Encoding.UTF8.GetBytes(msg.Payload);
 
+                // Artık DIRECT EXCHANGE'e publish ediyoruz
                 await channel.BasicPublishAsync(
-                    exchange: "",
-                    routingKey: "order_events",
+                    exchange: "order_exchange",
+                    routingKey: "order.created",
                     mandatory: false,
-                    basicProperties: new BasicProperties(), // veya null yerine yeni instance
-                    body: body
+                    basicProperties: new BasicProperties(), 
+                    body: body,
+                    cancellationToken: cancellationToken
                 );
 
-                var updateSql = @"
-                    UPDATE OutboxMessages 
+                const string updateSql = @"
+                    UPDATE OutboxMessages
                     SET Status = 'Processed', ProcessedAt = NOW()
                     WHERE Id = @Id";
 

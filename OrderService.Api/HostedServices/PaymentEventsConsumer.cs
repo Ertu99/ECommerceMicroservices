@@ -29,11 +29,40 @@ namespace OrderService.Api.HostedServices
             await using var connection = await factory.CreateConnectionAsync(stoppingToken);
             await using var channel = await connection.CreateChannelAsync(cancellationToken: stoppingToken);
 
+            // 1) EXCHANGE DECLARE
+            await channel.ExchangeDeclareAsync(
+                exchange: "payment_exchange",
+                type: "direct",
+                durable: true,
+                autoDelete: false,
+                arguments: null,
+                cancellationToken: stoppingToken
+            );
+
+            // 2) QUEUE DECLARE
             await channel.QueueDeclareAsync(
                 queue: "payment_events",
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
+                arguments: null,
+                cancellationToken: stoppingToken
+            );
+
+            // 3) BIND: payment.succeeded
+            await channel.QueueBindAsync(
+                queue: "payment_events",
+                exchange: "payment_exchange",
+                routingKey: "payment.succeeded",
+                arguments: null,
+                cancellationToken: stoppingToken
+            );
+
+            // 4) BIND: payment.failed
+            await channel.QueueBindAsync(
+                queue: "payment_events",
+                exchange: "payment_exchange",
+                routingKey: "payment.failed",
                 arguments: null,
                 cancellationToken: stoppingToken
             );
@@ -46,44 +75,33 @@ namespace OrderService.Api.HostedServices
             {
                 try
                 {
-                    string json = Encoding.UTF8.GetString(ea.Body.ToArray());
-
-                    var wrapper = JsonSerializer.Deserialize<PaymentEventWrapper>(json);
-
-                    if (wrapper == null)
-                    {
-                        Console.WriteLine("⚠ Geçersiz event wrapper alındı.");
-                        await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
-                        return;
-                    }
+                    var json = Encoding.UTF8.GetString(ea.Body.ToArray());
 
                     using var scope = _scopeFactory.CreateScope();
                     var service = scope.ServiceProvider.GetRequiredService<OrderAppService>();
 
-                    switch (wrapper.EventType)
+                    if (ea.RoutingKey == "payment.succeeded")
                     {
-                        case "PaymentSucceeded":
-                            var evtSuccess = JsonSerializer.Deserialize<PaymentSucceededEvent>(wrapper.Payload);
-                            if (evtSuccess != null)
-                                await service.HandlePaymentSucceededAsync(evtSuccess);
-                            break;
-
-                        case "PaymentFailed":
-                            var evtFail = JsonSerializer.Deserialize<PaymentFailedEvent>(wrapper.Payload);
-                            if (evtFail != null)
-                                await service.HandlePaymentFailedAsync(evtFail);
-                            break;
-
-                        default:
-                            Console.WriteLine($"⚠ Bilinmeyen eventType: {wrapper.EventType}");
-                            break;
+                        var evt = JsonSerializer.Deserialize<PaymentSucceededEvent>(json);
+                        if (evt != null)
+                            await service.HandlePaymentSucceededAsync(evt);
+                    }
+                    else if (ea.RoutingKey == "payment.failed")
+                    {
+                        var evt = JsonSerializer.Deserialize<PaymentFailedEvent>(json);
+                        if (evt != null)
+                            await service.HandlePaymentFailedAsync(evt);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"⚠ Bilinmeyen routing key: {ea.RoutingKey}");
                     }
 
                     await channel.BasicAckAsync(ea.DeliveryTag, false, stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"❌ PaymentEventConsumer HATASI: {ex.Message}");
+                    Console.WriteLine($"❌ PaymentEventsConsumer HATA: {ex.Message}");
                     await channel.BasicNackAsync(ea.DeliveryTag, false, true, stoppingToken);
                 }
             };
@@ -97,12 +115,5 @@ namespace OrderService.Api.HostedServices
 
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
-    }
-
-    // PaymentService'in gönderdiği JSON'u karşılayan model
-    public class PaymentEventWrapper
-    {
-        public string EventType { get; set; } = "";
-        public string Payload { get; set; } = "";
     }
 }
